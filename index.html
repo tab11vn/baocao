@@ -246,6 +246,9 @@
                 <button id="resetMonthToAutoBtn" type="button" class="px-3 py-2 rounded-xl text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition">
                     <i class="fa-solid fa-rotate-left mr-1"></i>Lấy từ Báo cáo ngày (đã chốt)
                 </button>
+                <button id="reopenMonthBtn" type="button" class="px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition">
+                    <i class="fa-solid fa-lock-open mr-1"></i>Mở lại tháng (Đang chạy)
+                </button>
                 <div class="flex items-center gap-2">
                     <button id="cancelEditMonthBtn" type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition">Hủy</button>
                     <button id="saveEditMonthBtn" type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-violet-600 hover:bg-violet-700 shadow-sm transition">Lưu vào Tổng hợp năm</button>
@@ -2435,6 +2438,20 @@
             return record;
         }
 
+        // Mở lại tháng đã chốt nhầm: trở về trạng thái "Đang chạy" (tự cộng dồn từ sổ ngày)
+        function reopenMonth(isoMonth) {
+            const cur = getStoredMonthSummary(isoMonth) || {};
+            const record = { ...cur, manualOverride: false, closed: false };
+            try {
+                dbStore.setItem(YEARLY_MONTHLY_PREFIX + isoMonth, JSON.stringify(record));
+            } catch (e) {
+                console.error('Lỗi mở lại tháng:', e);
+            }
+            const year = Number(isoMonth.split('-')[0]) || 2026;
+            renderYearlyReportView(year);
+            showToast(`Đã mở lại tháng ${formatShortMonthYear(isoMonth)} — trạng thái Đang chạy`, 'success');
+        }
+
         // Explicitly close/transfer a completed month to Yearly Summary and switch to Yearly View
         function transferMonthToYearlySummary(isoMonth, autoSwitchView = true) {
             if (buildMonthlyReportData(isoMonth).activeDaysCount === 0) {
@@ -2502,6 +2519,14 @@
                     closed: false,
                     source: 'empty'
                 };
+
+                if (stored && !stored.closed) {
+                    // Tháng đang chạy: tự cộng dồn từ Báo cáo ngày
+                    const live = buildMonthlyReportData(isoMonth);
+                    if (live.activeDaysCount > 0) {
+                        Object.assign(stored, live.totals);
+                    }
+                }
 
                 if (stored) {
                     const hasNonZero = [
@@ -2666,6 +2691,20 @@
                         statusBadge.title = 'Tự động cộng dồn từ sổ thu chi hàng ngày';
                     }
                     wrap.appendChild(statusBadge);
+                }
+
+                if (item.closed) {
+                    const reopenBtn = document.createElement('button');
+                    reopenBtn.type = 'button';
+                    reopenBtn.className = 'w-6 h-6 rounded-md text-slate-400 hover:text-amber-700 hover:bg-amber-100 transition inline-flex items-center justify-center';
+                    reopenBtn.title = `Mở lại tháng ${item.displayMonth} (về Đang chạy)`;
+                    reopenBtn.innerHTML = '<i class="fa-solid fa-lock-open text-[11px]"></i>';
+                    reopenBtn.addEventListener('click', () => {
+                        if (confirm(`Mở lại tháng ${item.displayMonth} về trạng thái Đang chạy?\nSố liệu sẽ tự cộng dồn từ Báo cáo ngày.`)) {
+                            reopenMonth(item.isoMonth);
+                        }
+                    });
+                    wrap.appendChild(reopenBtn);
                 }
 
                 const editBtn = document.createElement('button');
@@ -3548,6 +3587,13 @@
                 closeEditMonthModal();
                 renderYearlyReportView(Number(yearInput.value) || 2026);
                 showToast(`Đã cập nhật số liệu tháng ${savedMonthLabel} trong Tổng hợp năm!`, 'success');
+            });
+
+            document.getElementById('reopenMonthBtn').addEventListener('click', () => {
+                if (!editingYearMonthKey) return;
+                const key = editingYearMonthKey;
+                closeEditMonthModal();
+                reopenMonth(key);
             });
 
             document.getElementById('resetMonthToAutoBtn').addEventListener('click', () => {
