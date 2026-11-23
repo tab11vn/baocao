@@ -6,6 +6,7 @@
     <title>Báo Cáo Chi Tiết Thu Chi</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
     <!-- Google Fonts: Inter & JetBrains Mono for tabular numbers -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1028,7 +1029,6 @@
     </main>
 
     <!-- Embedded Initial Data Snapshot -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
     <script id="embeddedReportData" type="application/json">null</script>
 
     <script>
@@ -1036,174 +1036,186 @@
          * BÁO CÁO CHI TIẾT THU CHI, BÁO CÁO NGÀY & BÁO CÁO THÁNG (TỔNG HỢP NĂM)
          */
 
+        const STORAGE_PREFIX = 'bao_cao_thu_chi_v3_';
+        const YEARLY_MONTHLY_PREFIX = 'bao_cao_tong_hop_thang_v1_';
+        const OPENING_LOCK_STORAGE_KEY = 'bao_cao_thu_chi_opening_locked_v1';
+        const DAY_SNAPSHOT_PREFIX = 'bao_cao_chot_ngay_v1_';
+        const DAY_SNAPSHOT_SEEDED_KEY = 'bao_cao_chot_ngay_seeded_v1';
 
         // =====================================================================
         // SUPABASE STORAGE LAYER (thay thế localStorage)
-        // Bảng: public.app_kv (key text PK, value text, updated_at timestamptz)
-        // Giữ nguyên API đồng bộ getItem/setItem/removeItem/key/length để
-        // toàn bộ logic cũ chạy không đổi. Dữ liệu được tải về bộ nhớ khi mở
-        // trang, mọi thay đổi được ghi ngược lên Supabase (gộp lô, debounce).
+        // ---------------------------------------------------------------------
+        // Giữ nguyên API đồng bộ getItem/setItem/removeItem/key/length để phần
+        // còn lại của ứng dụng không phải đổi. Dữ liệu được nạp 1 lần từ bảng
+        // `kv_store` khi mở trang, mọi thay đổi được ghi ngược lên Supabase.
         // =====================================================================
-        const SUPABASE_URL = 'https://gecrzbjoorperfhlfvrv.supabase.co';   // <-- ĐIỀN VÀO
-        const SUPABASE_ANON_KEY = 'sb_publishable_X1Ws6H9esQA_YeRUc1nIYQ_A74-tFBS';              // <-- ĐIỀN VÀO
-        const SUPABASE_TABLE = 'app_kv';
+        const SUPABASE_URL = 'https://gecrzbjoorperfhlfvrv.supabase.co';   // <-- ĐIỀN
+        const SUPABASE_ANON_KEY = 'sb_publishable_X1Ws6H9esQA_YeRUc1nIYQ_A74-tFBS';               // <-- ĐIỀN
+        const SUPABASE_TABLE = 'kv_store';
 
-        const DB = (() => {
+        // TỰ ĐỘNG ĐĂNG NHẬP: điền tài khoản đã tạo ở Supabase (Authentication -> Users)
+        // để app không hiện màn hình đăng nhập. Để trống '' nếu muốn tự nhập tay.
+        const AUTO_LOGIN_EMAIL = 'namkyiicamdo@gmail.com';
+        const AUTO_LOGIN_PASSWORD = 'Camonquikhach@1';
+
+        function showLoginOverlay(client) {
+            return new Promise((resolve) => {
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
+                wrap.innerHTML = `
+                    <div style="background:#fff;border-radius:12px;padding:24px;width:100%;max-width:360px;box-shadow:0 20px 40px rgba(0,0,0,.25);font-family:inherit;">
+                        <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;color:#0f172a;">Đăng nhập</h2>
+                        <input id="sbLoginEmail" type="email" placeholder="Email" autocomplete="username" style="width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
+                        <input id="sbLoginPass" type="password" placeholder="Mật khẩu" autocomplete="current-password" style="width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
+                        <div id="sbLoginErr" style="color:#dc2626;font-size:13px;min-height:18px;margin-bottom:8px;"></div>
+                        <button id="sbLoginBtn" style="width:100%;background:#2563eb;color:#fff;border-radius:8px;padding:9px;font-weight:600;">Đăng nhập</button>
+                    </div>`;
+                document.body.appendChild(wrap);
+                const email = wrap.querySelector('#sbLoginEmail');
+                const pass = wrap.querySelector('#sbLoginPass');
+                const err = wrap.querySelector('#sbLoginErr');
+                const btn = wrap.querySelector('#sbLoginBtn');
+                async function submit() {
+                    err.textContent = '';
+                    btn.disabled = true;
+                    const { error } = await client.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
+                    btn.disabled = false;
+                    if (error) { err.textContent = 'Sai email hoặc mật khẩu.'; return; }
+                    wrap.remove();
+                    resolve();
+                }
+                btn.addEventListener('click', submit);
+                pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+                email.focus();
+            });
+        }
+
+        async function ensureSupabaseAuth(client) {
+            const { data: { session } } = await client.auth.getSession();
+            if (session) return;
+            if (AUTO_LOGIN_EMAIL && AUTO_LOGIN_PASSWORD) {
+                const { error } = await client.auth.signInWithPassword({
+                    email: AUTO_LOGIN_EMAIL, password: AUTO_LOGIN_PASSWORD
+                });
+                if (error) throw new Error('Tự động đăng nhập thất bại: ' + error.message);
+                return;
+            }
+            await showLoginOverlay(client);
+        }
+
+        const dbStore = (() => {
             const cache = new Map();
+            const dirty = new Map();      // key -> value | null (null = xoá)
             let keysArr = null;
             let client = null;
-            let readOnly = false;
-            const dirty = new Map();      // key -> value | null (null = xoá)
             let timer = null;
-            let flushing = Promise.resolve();
+            let flushing = false;
 
-            function showBanner(msg, color) {
-                let el = document.getElementById('dbStatusBanner');
-                if (!el) {
-                    el = document.createElement('div');
-                    el.id = 'dbStatusBanner';
-                    el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:8px 12px;font:600 13px sans-serif;text-align:center;color:#fff;';
-                    document.body.appendChild(el);
-                }
-                el.style.background = color || '#dc2626';
-                el.textContent = msg;
+            const badge = () => document.getElementById('dbStatusBadge');
+            function setStatus(text, color) {
+                const el = badge();
+                if (!el) return;
+                el.textContent = text;
+                el.style.background = color;
             }
 
-            async function flushNow() {
-                if (readOnly || !client || dirty.size === 0) return;
+            function schedule() {
+                setStatus('Đang lưu…', '#d97706');
+                clearTimeout(timer);
+                timer = setTimeout(flush, 500);
+            }
+
+            async function flush() {
+                if (flushing || !client || dirty.size === 0) return;
+                flushing = true;
                 const batch = new Map(dirty);
                 dirty.clear();
-                const upserts = [], deletes = [];
-                batch.forEach((v, k) => {
-                    if (v === null) deletes.push(k);
-                    else upserts.push({ key: k, value: v, updated_at: new Date().toISOString() });
-                });
                 try {
-                    for (let i = 0; i < upserts.length; i += 200) {
-                        const { error } = await client.from(SUPABASE_TABLE).upsert(upserts.slice(i, i + 200), { onConflict: 'key' });
+                    const upserts = [], deletes = [];
+                    batch.forEach((v, k) => {
+                        if (v === null) deletes.push(k);
+                        else upserts.push({ key: k, value: v, updated_at: new Date().toISOString() });
+                    });
+                    if (upserts.length) {
+                        const { error } = await client.from(SUPABASE_TABLE).upsert(upserts, { onConflict: 'key' });
                         if (error) throw error;
                     }
                     if (deletes.length) {
                         const { error } = await client.from(SUPABASE_TABLE).delete().in('key', deletes);
                         if (error) throw error;
                     }
+                    setStatus('Đã lưu lên Supabase', '#059669');
                 } catch (e) {
                     console.error('Lỗi ghi Supabase:', e);
-                    // trả lại hàng đợi để thử lại, không ghi đè thay đổi mới hơn
+                    // trả lại hàng đợi (không ghi đè thay đổi mới hơn) để thử lại
                     batch.forEach((v, k) => { if (!dirty.has(k)) dirty.set(k, v); });
-                    showBanner('Không lưu được lên Supabase – đang thử lại…', '#d97706');
-                    setTimeout(schedule, 3000);
-                    return;
-                }
-                if (dirty.size === 0) {
-                    const el = document.getElementById('dbStatusBanner');
-                    if (el) el.remove();
+                    setStatus('Lỗi lưu – sẽ thử lại', '#dc2626');
+                    clearTimeout(timer);
+                    timer = setTimeout(flush, 5000);
+                } finally {
+                    flushing = false;
+                    if (dirty.size && !timer) schedule();
                 }
             }
 
-            function schedule() {
-                if (readOnly) return;
-                clearTimeout(timer);
-                timer = setTimeout(() => { flushing = flushing.then(flushNow); }, 300);
-            }
+            const APP_PREFIXES = [STORAGE_PREFIX, YEARLY_MONTHLY_PREFIX, DAY_SNAPSHOT_PREFIX,
+                                  OPENING_LOCK_STORAGE_KEY, DAY_SNAPSHOT_SEEDED_KEY, 'bao_cao_cam_do_href_v1'];
 
-            async function fetchAll() {
-                const rows = [];
-                const PAGE = 1000;
-                for (let from = 0; ; from += PAGE) {
-                    const { data, error } = await client.from(SUPABASE_TABLE)
-                        .select('key,value').order('key').range(from, from + PAGE - 1);
-                    if (error) throw error;
-                    rows.push(...data);
-                    if (data.length < PAGE) break;
-                }
-                return rows;
-            }
-
-            // Chuyển dữ liệu cũ trong localStorage của trình duyệt lên Supabase (1 lần duy nhất)
-            async function migrateFromLocalStorage() {
-                const FLAG = '__migrated_from_localstorage_v1';
-                if (cache.has(FLAG)) return;
-                let moved = 0;
+            async function init() {
+                setStatus('Đang kết nối Supabase…', '#6b7280');
                 try {
-                    for (let i = 0; i < window.localStorage.length; i++) {
-                        const k = window.localStorage.key(i);
-                        if (k && k.startsWith('bao_cao_') && !cache.has(k)) {
-                            const v = window.localStorage.getItem(k);
-                            if (v !== null) { cache.set(k, v); dirty.set(k, v); moved++; }
-                        }
+                    if (!window.supabase) throw new Error('Không tải được thư viện supabase-js');
+                    client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                    setStatus('Đang đăng nhập…', '#6b7280');
+                    await ensureSupabaseAuth(client);
+
+                    // nạp toàn bộ dữ liệu (phân trang 1000 dòng/lần)
+                    let from = 0; const size = 1000;
+                    for (;;) {
+                        const { data, error } = await client.from(SUPABASE_TABLE)
+                            .select('key,value').order('key').range(from, from + size - 1);
+                        if (error) throw error;
+                        data.forEach(r => cache.set(r.key, r.value));
+                        if (data.length < size) break;
+                        from += size;
                     }
-                } catch (e) { console.warn('Không đọc được localStorage cũ:', e); }
-                cache.set(FLAG, '1');
-                dirty.set(FLAG, '1');
-                keysArr = null;
-                await flushNow();
-                if (moved) console.info('Đã chuyển ' + moved + ' mục từ localStorage lên Supabase.');
+
+                    // Di chuyển 1 lần: nếu Supabase còn trống mà trình duyệt đang có
+                    // dữ liệu localStorage cũ thì đẩy lên (không xoá bản cũ).
+                    if (cache.size === 0) {
+                        let moved = 0;
+                        for (let i = 0; i < window.localStorage.length; i++) {
+                            const k = window.localStorage.key(i);
+                            if (k && APP_PREFIXES.some(p => k.startsWith(p))) {
+                                const v = window.localStorage.getItem(k);
+                                if (v !== null) { cache.set(k, v); dirty.set(k, v); moved++; }
+                            }
+                        }
+                        if (moved) console.info('Đã chuyển ' + moved + ' mục từ localStorage lên Supabase');
+                    }
+                    keysArr = null;
+                    if (dirty.size) { schedule(); } else { setStatus('Đã kết nối Supabase', '#059669'); }
+                } catch (e) {
+                    console.error('Không kết nối được Supabase:', e);
+                    client = null;
+                    setStatus('Không kết nối được Supabase', '#dc2626');
+                    alert('Không kết nối được Supabase. Kiểm tra SUPABASE_URL / SUPABASE_ANON_KEY và bảng kv_store.\n\n' + (e.message || e));
+                }
             }
+
+            window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+            window.addEventListener('beforeunload', (ev) => { if (dirty.size) { flush(); ev.preventDefault(); ev.returnValue = ''; } });
 
             return {
-                async init() {
-                    try {
-                        if (!window.supabase || SUPABASE_URL.includes('YOUR-PROJECT-ID')) {
-                            throw new Error('Chưa cấu hình SUPABASE_URL / SUPABASE_ANON_KEY');
-                        }
-                        client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-                        // Tự động đăng nhập ẩn danh (không cần tài khoản/mật khẩu).
-                        // Phải bật "Anonymous Sign-Ins" trong Supabase Dashboard:
-                        // Authentication > Sign In / Providers > Anonymous Sign-Ins.
-                        const { data: { session } } = await client.auth.getSession();
-                        if (!session) {
-                            const { error: signInError } = await client.auth.signInAnonymously();
-                            if (signInError) throw signInError;
-                        }
-
-                        const rows = await fetchAll();
-                        rows.forEach(r => cache.set(r.key, r.value));
-                        keysArr = null;
-                        await migrateFromLocalStorage();
-                    } catch (e) {
-                        console.error('Không kết nối được Supabase:', e);
-                        readOnly = true;   // tránh ghi đè dữ liệu thật bằng dữ liệu khởi tạo rỗng
-                        showBanner('Không kết nối được Supabase – chế độ chỉ xem, thay đổi sẽ KHÔNG được lưu. (' + (e.message || e) + ')');
-                    }
-                },
+                init, flush,
                 getItem(k) { return cache.has(k) ? cache.get(k) : null; },
-                setItem(k, v) {
-                    if (readOnly) return;
-                    v = String(v);
-                    if (cache.get(k) === v) return;
-                    if (!cache.has(k)) keysArr = null;
-                    cache.set(k, v);
-                    dirty.set(k, v);
-                    schedule();
-                },
-                removeItem(k) {
-                    if (readOnly || !cache.has(k)) return;
-                    cache.delete(k);
-                    keysArr = null;
-                    dirty.set(k, null);
-                    schedule();
-                },
-                key(i) {
-                    if (!keysArr) keysArr = Array.from(cache.keys());
-                    return i >= 0 && i < keysArr.length ? keysArr[i] : null;
-                },
-                get length() { return cache.size; },
-                hasPending() { return dirty.size > 0; },
-                flush() { clearTimeout(timer); flushing = flushing.then(flushNow); return flushing; }
+                setItem(k, v) { v = String(v); cache.set(k, v); keysArr = null; dirty.set(k, v); schedule(); },
+                removeItem(k) { if (cache.delete(k)) { keysArr = null; dirty.set(k, null); schedule(); } },
+                key(i) { if (!keysArr) keysArr = Array.from(cache.keys()); return i < keysArr.length ? keysArr[i] : null; },
+                get length() { return cache.size; }
             };
         })();
 
-        window.addEventListener('beforeunload', (e) => {
-            if (DB.hasPending()) { DB.flush(); e.preventDefault(); e.returnValue = ''; }
-        });
-
-        const STORAGE_PREFIX = 'bao_cao_thu_chi_v3_';
-        const YEARLY_MONTHLY_PREFIX = 'bao_cao_tong_hop_thang_v1_';
-        const OPENING_LOCK_STORAGE_KEY = 'bao_cao_thu_chi_opening_locked_v1';
-        const DAY_SNAPSHOT_PREFIX = 'bao_cao_chot_ngay_v1_';
-        const DAY_SNAPSHOT_SEEDED_KEY = 'bao_cao_chot_ngay_seeded_v1';
         const SNAPSHOT_KEYS = ['tienCam','tienChuoc','tienLoi','tienChuyen','phiChuyen','tienRut','phiRut','loiNhuan','chiRa','thuVao'];
 
         function getTodayIso() {
@@ -1304,9 +1316,9 @@
             try {
                 Object.entries(HISTORICAL_NOV_2026_SUMMARY).forEach(([isoDate, rec]) => {
                     const storageKey = STORAGE_PREFIX + isoDate;
-                    if (overwrite || !DB.getItem(storageKey)) {
+                    if (overwrite || !dbStore.getItem(storageKey)) {
                         const dayState = buildStateFromHistoricalSummary(rec);
-                        DB.setItem(storageKey, JSON.stringify(dayState));
+                        dbStore.setItem(storageKey, JSON.stringify(dayState));
                     }
                 });
             } catch (e) {
@@ -1317,7 +1329,7 @@
         // --- BÁO CÁO NGÀY: bản chốt từng ngày, lưu riêng, độc lập với sổ chi tiết ---
         function getDaySnapshot(isoDate) {
             try {
-                const raw = DB.getItem(DAY_SNAPSHOT_PREFIX + isoDate);
+                const raw = dbStore.getItem(DAY_SNAPSHOT_PREFIX + isoDate);
                 if (!raw) return null;
                 const p = JSON.parse(raw);
                 const out = {};
@@ -1332,7 +1344,7 @@
             const rec = {};
             SNAPSHOT_KEYS.forEach(k => rec[k] = parseNumber(metrics[k]));
             try {
-                DB.setItem(DAY_SNAPSHOT_PREFIX + isoDate, JSON.stringify(rec));
+                dbStore.setItem(DAY_SNAPSHOT_PREFIX + isoDate, JSON.stringify(rec));
             } catch (e) {
                 console.error('Lỗi lưu bản chốt ngày:', e);
             }
@@ -1340,19 +1352,19 @@
 
         function deleteDaySnapshot(isoDate) {
             try {
-                DB.removeItem(DAY_SNAPSHOT_PREFIX + isoDate);
+                dbStore.removeItem(DAY_SNAPSHOT_PREFIX + isoDate);
             } catch (e) {}
         }
 
         function seedDaySnapshots(overwrite = false) {
             try {
-                if (!overwrite && DB.getItem(DAY_SNAPSHOT_SEEDED_KEY)) return;
+                if (!overwrite && dbStore.getItem(DAY_SNAPSHOT_SEEDED_KEY)) return;
                 Object.entries(HISTORICAL_NOV_2026_SUMMARY).forEach(([isoDate, rec]) => {
-                    if (overwrite || !DB.getItem(DAY_SNAPSHOT_PREFIX + isoDate)) {
+                    if (overwrite || !dbStore.getItem(DAY_SNAPSHOT_PREFIX + isoDate)) {
                         saveDaySnapshot(isoDate, calculateDayMetricsFromState(buildStateFromHistoricalSummary(rec)));
                     }
                 });
-                DB.setItem(DAY_SNAPSHOT_SEEDED_KEY, '1');
+                dbStore.setItem(DAY_SNAPSHOT_SEEDED_KEY, '1');
             } catch (e) {
                 console.error('Lỗi khởi tạo bản chốt ngày:', e);
             }
@@ -1361,10 +1373,10 @@
         function collectAllSnapshotsForExport() {
             const all = {};
             try {
-                for (let i = 0; i < DB.length; i++) {
-                    const key = DB.key(i);
+                for (let i = 0; i < dbStore.length; i++) {
+                    const key = dbStore.key(i);
                     if (key && key.startsWith(DAY_SNAPSHOT_PREFIX)) {
-                        const raw = DB.getItem(key);
+                        const raw = dbStore.getItem(key);
                         if (raw) all[key.slice(DAY_SNAPSHOT_PREFIX.length)] = JSON.parse(raw);
                     }
                 }
@@ -1396,7 +1408,7 @@
 
             let nextState = null;
             try {
-                const raw = DB.getItem(STORAGE_PREFIX + nextDate);
+                const raw = dbStore.getItem(STORAGE_PREFIX + nextDate);
                 if (raw) nextState = JSON.parse(raw);
             } catch (e) {
                 console.error('Lỗi đọc dữ liệu ngày kế tiếp:', e);
@@ -1414,7 +1426,7 @@
             nextState.closingBalances = computeClosingBalancesFromState(nextState);
 
             try {
-                DB.setItem(STORAGE_PREFIX + nextDate, JSON.stringify(nextState));
+                dbStore.setItem(STORAGE_PREFIX + nextDate, JSON.stringify(nextState));
             } catch (e) {
                 console.error('Lỗi lưu dữ liệu ngày kế tiếp:', e);
             }
@@ -1425,8 +1437,8 @@
             try {
                 Object.entries(HISTORICAL_2026_MONTHLY_SUMMARY).forEach(([isoMonth, rec]) => {
                     const storageKey = YEARLY_MONTHLY_PREFIX + isoMonth;
-                    if (overwrite || !DB.getItem(storageKey)) {
-                        DB.setItem(storageKey, JSON.stringify({
+                    if (overwrite || !dbStore.getItem(storageKey)) {
+                        dbStore.setItem(storageKey, JSON.stringify({
                             ...rec,
                             manualOverride: true,
                             closed: true
@@ -1581,7 +1593,7 @@
             let prevState = null;
 
             try {
-                const rawPrev = DB.getItem(STORAGE_PREFIX + prevDate);
+                const rawPrev = dbStore.getItem(STORAGE_PREFIX + prevDate);
                 if (rawPrev) {
                     prevState = JSON.parse(rawPrev);
                 }
@@ -1724,7 +1736,7 @@
 
         function saveToStorage() {
             try {
-                DB.setItem(STORAGE_PREFIX + currentDate, JSON.stringify(state));
+                dbStore.setItem(STORAGE_PREFIX + currentDate, JSON.stringify(state));
             } catch (e) {
                 console.error('Lỗi lưu dữ liệu:', e);
             }
@@ -1739,30 +1751,30 @@
                         if (embedded.allDays && typeof embedded.allDays === 'object') {
                             Object.entries(embedded.allDays).forEach(([dateKey, dayObj]) => {
                                 if (dateKey && dayObj) {
-                                    DB.setItem(STORAGE_PREFIX + dateKey, JSON.stringify(dayObj));
+                                    dbStore.setItem(STORAGE_PREFIX + dateKey, JSON.stringify(dayObj));
                                 }
                             });
                         }
                         if (embedded.allMonths && typeof embedded.allMonths === 'object') {
                             Object.entries(embedded.allMonths).forEach(([monthKey, monthObj]) => {
                                 if (monthKey && monthObj) {
-                                    DB.setItem(YEARLY_MONTHLY_PREFIX + monthKey, JSON.stringify(monthObj));
+                                    dbStore.setItem(YEARLY_MONTHLY_PREFIX + monthKey, JSON.stringify(monthObj));
                                 }
                             });
                         }
                         if (embedded.allSnapshots && typeof embedded.allSnapshots === 'object') {
                             Object.entries(embedded.allSnapshots).forEach(([dateKey, obj]) => {
                                 if (dateKey && obj) {
-                                    DB.setItem(DAY_SNAPSHOT_PREFIX + dateKey, JSON.stringify(obj));
+                                    dbStore.setItem(DAY_SNAPSHOT_PREFIX + dateKey, JSON.stringify(obj));
                                 }
                             });
-                            DB.setItem(DAY_SNAPSHOT_SEEDED_KEY, '1');
+                            dbStore.setItem(DAY_SNAPSHOT_SEEDED_KEY, '1');
                         }
                         if (embedded.date && embedded.state) {
-                            DB.setItem(STORAGE_PREFIX + embedded.date, JSON.stringify(embedded.state));
+                            dbStore.setItem(STORAGE_PREFIX + embedded.date, JSON.stringify(embedded.state));
                         }
                         if (typeof embedded.openingLocked === 'boolean') {
-                            DB.setItem(OPENING_LOCK_STORAGE_KEY, embedded.openingLocked ? 'true' : 'false');
+                            dbStore.setItem(OPENING_LOCK_STORAGE_KEY, embedded.openingLocked ? 'true' : 'false');
                         }
                     }
                     embeddedEl.textContent = 'null';
@@ -1776,7 +1788,7 @@
             hydrateEmbeddedDataOnce();
 
             try {
-                const raw = DB.getItem(STORAGE_PREFIX + dateStr);
+                const raw = dbStore.getItem(STORAGE_PREFIX + dateStr);
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     state.balances = {
@@ -1831,7 +1843,7 @@
                 return state;
             }
             try {
-                const raw = DB.getItem(STORAGE_PREFIX + isoDate);
+                const raw = dbStore.getItem(STORAGE_PREFIX + isoDate);
                 if (raw) {
                     return JSON.parse(raw);
                 }
@@ -1847,11 +1859,11 @@
         function collectAllDaysForExport() {
             const allDays = {};
             try {
-                for (let i = 0; i < DB.length; i++) {
-                    const key = DB.key(i);
+                for (let i = 0; i < dbStore.length; i++) {
+                    const key = dbStore.key(i);
                     if (key && key.startsWith(STORAGE_PREFIX)) {
                         const dateKey = key.slice(STORAGE_PREFIX.length);
-                        const raw = DB.getItem(key);
+                        const raw = dbStore.getItem(key);
                         if (raw) allDays[dateKey] = JSON.parse(raw);
                     }
                 }
@@ -1870,11 +1882,11 @@
         function collectAllMonthsForExport() {
             const allMonths = {};
             try {
-                for (let i = 0; i < DB.length; i++) {
-                    const key = DB.key(i);
+                for (let i = 0; i < dbStore.length; i++) {
+                    const key = dbStore.key(i);
                     if (key && key.startsWith(YEARLY_MONTHLY_PREFIX)) {
                         const monthKey = key.slice(YEARLY_MONTHLY_PREFIX.length);
-                        const raw = DB.getItem(key);
+                        const raw = dbStore.getItem(key);
                         if (raw) allMonths[monthKey] = JSON.parse(raw);
                     }
                 }
@@ -2389,7 +2401,7 @@
 
         function getStoredMonthSummary(isoMonth) {
             try {
-                const raw = DB.getItem(YEARLY_MONTHLY_PREFIX + isoMonth);
+                const raw = dbStore.getItem(YEARLY_MONTHLY_PREFIX + isoMonth);
                 if (raw) return JSON.parse(raw);
             } catch (e) {
                 console.error('Lỗi đọc dữ liệu tháng:', isoMonth, e);
@@ -2415,7 +2427,7 @@
                 closed: true
             };
             try {
-                DB.setItem(YEARLY_MONTHLY_PREFIX + isoMonth, JSON.stringify(record));
+                dbStore.setItem(YEARLY_MONTHLY_PREFIX + isoMonth, JSON.stringify(record));
             } catch (e) {
                 console.error('Lỗi lưu tổng hợp tháng:', e);
             }
@@ -2765,7 +2777,7 @@
                 cashCount: createEmptyCashCount()
             };
             try {
-                DB.setItem(STORAGE_PREFIX + isoDate, JSON.stringify(emptyState));
+                dbStore.setItem(STORAGE_PREFIX + isoDate, JSON.stringify(emptyState));
             } catch (e) {
                 console.error('Lỗi xóa dữ liệu ngày:', isoDate, e);
             }
@@ -2849,7 +2861,7 @@
 
         function isOpeningBalanceLocked() {
             try {
-                return DB.getItem(OPENING_LOCK_STORAGE_KEY) === 'true';
+                return dbStore.getItem(OPENING_LOCK_STORAGE_KEY) === 'true';
             } catch (e) {
                 return Boolean(state.openingLocked);
             }
@@ -2858,7 +2870,7 @@
         function setOpeningBalanceLocked(locked, notify = false) {
             state.openingLocked = Boolean(locked);
             try {
-                DB.setItem(OPENING_LOCK_STORAGE_KEY, locked ? 'true' : 'false');
+                dbStore.setItem(OPENING_LOCK_STORAGE_KEY, locked ? 'true' : 'false');
             } catch (e) {
                 console.error('Lỗi lưu trạng thái khóa đầu ngày:', e);
             }
@@ -3529,7 +3541,7 @@
                     closed: true
                 };
                 try {
-                    DB.setItem(YEARLY_MONTHLY_PREFIX + editingYearMonthKey, JSON.stringify(record));
+                    dbStore.setItem(YEARLY_MONTHLY_PREFIX + editingYearMonthKey, JSON.stringify(record));
                 } catch (e) {}
                 const savedMonthLabel = formatShortMonthYear(editingYearMonthKey);
                 closeEditMonthModal();
@@ -3951,7 +3963,7 @@
             if (!linkEl) return;
 
             try {
-                const savedHref = DB.getItem(CAM_DO_LINK_STORAGE_KEY);
+                const savedHref = dbStore.getItem(CAM_DO_LINK_STORAGE_KEY);
                 if (savedHref && savedHref.trim()) {
                     linkEl.setAttribute('href', savedHref.trim());
                     linkEl.setAttribute('title', `Mở tệp quản lý Cầm đồ (${savedHref.trim()})`);
@@ -3978,7 +3990,7 @@
                     linkEl.setAttribute('href', newHref);
                     linkEl.setAttribute('title', `Mở tệp quản lý Cầm đồ (${newHref})`);
                     try {
-                        DB.setItem(CAM_DO_LINK_STORAGE_KEY, newHref);
+                        dbStore.setItem(CAM_DO_LINK_STORAGE_KEY, newHref);
                     } catch (e) {}
                     closeModal();
                     showToast(`Đã cập nhật siêu liên kết Cầm đồ → ${newHref}`, 'success');
@@ -3993,7 +4005,7 @@
 
         // --- BOOTSTRAP APPLICATION ---
         window.addEventListener('DOMContentLoaded', async () => {
-            await DB.init();
+            await dbStore.init();
             initCamDoHyperlink();
             hydrateEmbeddedDataOnce();
             seedHistoricalReportData(false);
@@ -4016,5 +4028,6 @@
             switchViewMode('detail');
         });
     </script>
+<div id="dbStatusBadge" class="no-print" style="position:fixed;right:12px;bottom:12px;z-index:9999;padding:4px 10px;border-radius:9999px;color:#fff;font-size:12px;background:#6b7280;opacity:.9;pointer-events:none;">…</div>
 </body>
 </html>
