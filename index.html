@@ -1044,26 +1044,26 @@
 
         // =====================================================================
         // SUPABASE STORAGE LAYER (thay thế localStorage)
-        // ---------------------------------------------------------------------
-        // Giữ nguyên API đồng bộ getItem/setItem/removeItem/key/length để phần
-        // còn lại của ứng dụng không phải đổi. Dữ liệu được nạp 1 lần từ bảng
-        // `kv_store` khi mở trang, mọi thay đổi được ghi ngược lên Supabase.
+        // Giữ nguyên API đồng bộ getItem/setItem/removeItem/key/length.
+        // Dữ liệu nạp 1 lần từ bảng `kv_store` khi mở trang; mọi thay đổi được
+        // ghi ngược lên Supabase. Chỉ dùng đăng nhập email + mật khẩu
+        // (KHÔNG dùng đăng nhập ẩn danh).
         // =====================================================================
-        const SUPABASE_URL = 'https://gecrzbjoorperfhlfvrv.supabase.co';   // <-- ĐIỀN
-        const SUPABASE_ANON_KEY = 'sb_publishable_X1Ws6H9esQA_YeRUc1nIYQ_A74-tFBS';               // <-- ĐIỀN
+        const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';   // <-- ĐIỀN
+        const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';               // <-- ĐIỀN
         const SUPABASE_TABLE = 'kv_store';
 
         // TỰ ĐỘNG ĐĂNG NHẬP: điền tài khoản đã tạo ở Supabase (Authentication -> Users)
         // để app không hiện màn hình đăng nhập. Để trống '' nếu muốn tự nhập tay.
         const AUTO_LOGIN_EMAIL = 'namkyiicamdo@gmail.com';
-        const AUTO_LOGIN_PASSWORD = 'Camonquikhach@1';
+        const AUTO_LOGIN_PASSWORD = '';   // <-- ĐIỀN mật khẩu (để trống = hiện hộp đăng nhập)
 
         function showLoginOverlay(client) {
             return new Promise((resolve) => {
                 const wrap = document.createElement('div');
                 wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px;';
                 wrap.innerHTML = `
-                    <div style="background:#fff;border-radius:12px;padding:24px;width:100%;max-width:360px;box-shadow:0 20px 40px rgba(0,0,0,.25);font-family:inherit;">
+                    <div style="background:#fff;border-radius:12px;padding:24px;width:100%;max-width:360px;box-shadow:0 20px 40px rgba(0,0,0,.25);">
                         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;color:#0f172a;">Đăng nhập</h2>
                         <input id="sbLoginEmail" type="email" placeholder="Email" autocomplete="username" style="width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
                         <input id="sbLoginPass" type="password" placeholder="Mật khẩu" autocomplete="current-password" style="width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
@@ -1075,6 +1075,7 @@
                 const pass = wrap.querySelector('#sbLoginPass');
                 const err = wrap.querySelector('#sbLoginErr');
                 const btn = wrap.querySelector('#sbLoginBtn');
+                email.value = AUTO_LOGIN_EMAIL || '';
                 async function submit() {
                     err.textContent = '';
                     btn.disabled = true;
@@ -1086,13 +1087,14 @@
                 }
                 btn.addEventListener('click', submit);
                 pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-                email.focus();
+                (email.value ? pass : email).focus();
             });
         }
 
         async function ensureSupabaseAuth(client) {
             const { data: { session } } = await client.auth.getSession();
-            if (session) return;
+            if (session && !session.user.is_anonymous) return;
+            if (session && session.user.is_anonymous) await client.auth.signOut();   // không chấp nhận phiên ẩn danh
             if (AUTO_LOGIN_EMAIL && AUTO_LOGIN_PASSWORD) {
                 const { error } = await client.auth.signInWithPassword({
                     email: AUTO_LOGIN_EMAIL, password: AUTO_LOGIN_PASSWORD
@@ -1111,9 +1113,8 @@
             let timer = null;
             let flushing = false;
 
-            const badge = () => document.getElementById('dbStatusBadge');
             function setStatus(text, color) {
-                const el = badge();
+                const el = document.getElementById('dbStatusBadge');
                 if (!el) return;
                 el.textContent = text;
                 el.style.background = color;
@@ -1126,6 +1127,7 @@
             }
 
             async function flush() {
+                timer = null;
                 if (flushing || !client || dirty.size === 0) return;
                 flushing = true;
                 const batch = new Map(dirty);
@@ -1147,7 +1149,6 @@
                     setStatus('Đã lưu lên Supabase', '#059669');
                 } catch (e) {
                     console.error('Lỗi ghi Supabase:', e);
-                    // trả lại hàng đợi (không ghi đè thay đổi mới hơn) để thử lại
                     batch.forEach((v, k) => { if (!dirty.has(k)) dirty.set(k, v); });
                     setStatus('Lỗi lưu – sẽ thử lại', '#dc2626');
                     clearTimeout(timer);
@@ -1168,8 +1169,8 @@
                     client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
                     setStatus('Đang đăng nhập…', '#6b7280');
                     await ensureSupabaseAuth(client);
+                    setStatus('Đang tải dữ liệu…', '#6b7280');
 
-                    // nạp toàn bộ dữ liệu (phân trang 1000 dòng/lần)
                     let from = 0; const size = 1000;
                     for (;;) {
                         const { data, error } = await client.from(SUPABASE_TABLE)
@@ -1180,8 +1181,8 @@
                         from += size;
                     }
 
-                    // Di chuyển 1 lần: nếu Supabase còn trống mà trình duyệt đang có
-                    // dữ liệu localStorage cũ thì đẩy lên (không xoá bản cũ).
+                    // Di chuyển 1 lần: Supabase còn trống mà trình duyệt có dữ liệu
+                    // localStorage cũ thì đẩy lên (không xoá bản cũ).
                     if (cache.size === 0) {
                         let moved = 0;
                         for (let i = 0; i < window.localStorage.length; i++) {
@@ -1199,7 +1200,7 @@
                     console.error('Không kết nối được Supabase:', e);
                     client = null;
                     setStatus('Không kết nối được Supabase', '#dc2626');
-                    alert('Không kết nối được Supabase. Kiểm tra SUPABASE_URL / SUPABASE_ANON_KEY và bảng kv_store.\n\n' + (e.message || e));
+                    alert('Không kết nối được Supabase.\n\n' + (e.message || e));
                 }
             }
 
