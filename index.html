@@ -3837,7 +3837,8 @@
                         el.setAttribute('data-cap-expand', '1');
                         marked.push(el);
                         extra += el.scrollHeight - el.clientHeight;
-                    } else if (scrollX && el.scrollWidth > el.clientWidth + 1) {
+                    }
+                    if (scrollX && el.scrollWidth > el.clientWidth + 1) {
                         el.setAttribute('data-cap-expand-x', '1');
                         marked.push(el);
                     }
@@ -3858,11 +3859,12 @@
                     }
                 });
 
-                let width = Math.max(root.scrollWidth, body.scrollWidth, root.clientWidth);
+                // Luôn chụp theo bố cục máy tính (>= 1366px) để không mất cột trên điện thoại
+                let width = Math.max(1366, root.scrollWidth, body.scrollWidth, root.clientWidth);
                 body.querySelectorAll('[data-cap-expand-x]').forEach(el => {
                     width = Math.max(width, Math.ceil(el.getBoundingClientRect().left + el.scrollWidth));
                 });
-                const estHeight = Math.max(root.scrollHeight, body.scrollHeight) + extra + 80;
+                const estHeight = Math.max(root.scrollHeight, body.scrollHeight) + extra + 600;
 
                 let scale = Math.min(2, window.devicePixelRatio > 1 ? 2 : 1.5);
                 scale = Math.min(scale, 16000 / estHeight, 16000 / width, Math.sqrt(16000000 / (width * estHeight)));
