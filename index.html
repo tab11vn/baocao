@@ -7,6 +7,7 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <!-- Google Fonts: Inter & JetBrains Mono for tabular numbers -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -433,6 +434,12 @@
                         <span>Xuất Excel/CSV Tổng hợp năm</span>
                     </button>
                 </div>
+
+                <!-- Full-page Screenshot Button -->
+                <button id="screenshotBtn" type="button" title="Chụp toàn bộ báo cáo từ đầu đến cuối trang" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 active:scale-[0.99] transition">
+                    <i class="fa-solid fa-camera"></i>
+                    <span class="hidden md:inline">Chụp báo cáo</span>
+                </button>
 
                 <!-- Common Print Button -->
                 <button id="printBtn" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 active:scale-[0.99] transition">
@@ -3799,6 +3806,180 @@
             document.getElementById('printBtn').addEventListener('click', () => {
                 window.print();
             });
+            document.getElementById('screenshotBtn').addEventListener('click', captureFullPageScreenshot);
+        }
+
+        async function captureFullPageScreenshot() {
+            const btn = document.getElementById('screenshotBtn');
+            if (typeof html2canvas === 'undefined') {
+                showToast('Không tải được thư viện chụp ảnh. Vui lòng kiểm tra kết nối mạng.', 'warning');
+                return;
+            }
+            const icon = btn.querySelector('i');
+            const oldIconClass = icon.className;
+            btn.disabled = true;
+            icon.className = 'fa-solid fa-spinner fa-spin';
+            const prevScrollX = window.scrollX, prevScrollY = window.scrollY;
+            const marked = [];
+            try {
+                window.scrollTo(0, 0);
+                if (document.fonts && document.fonts.ready) { await document.fonts.ready; }
+                const root = document.documentElement;
+                const body = document.body;
+
+                // Đánh dấu các vùng đang bị giới hạn chiều cao/cuộn (vd. bảng 45 dòng) để mở rộng toàn bộ khi chụp
+                let extra = 0;
+                body.querySelectorAll('*').forEach(el => {
+                    const cs = getComputedStyle(el);
+                    const scrollY = (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'hidden');
+                    const scrollX = (cs.overflowX === 'auto' || cs.overflowX === 'scroll');
+                    if (scrollY && el.scrollHeight > el.clientHeight + 1 && el.clientHeight > 0) {
+                        el.setAttribute('data-cap-expand', '1');
+                        marked.push(el);
+                        extra += el.scrollHeight - el.clientHeight;
+                    } else if (scrollX && el.scrollWidth > el.clientWidth + 1) {
+                        el.setAttribute('data-cap-expand-x', '1');
+                        marked.push(el);
+                    }
+                });
+
+                // Bảng kê giao dịch: chỉ giữ đến dòng có số liệu cuối cùng, bỏ các dòng trống phía sau (giữ dòng nhập nhanh đầu bảng)
+                const gridRows = Array.from(document.querySelectorAll('#gridBody > tr'));
+                const hasData = (tr) => Array.from(tr.querySelectorAll('input')).some(inp => {
+                    const v = String(inp.value || '').replace(/[\s,.]/g, '');
+                    return v !== '' && v !== '0';
+                });
+                let lastDataIdx = 0;
+                gridRows.forEach((tr, i) => { if (i > 0 && hasData(tr)) lastDataIdx = i; });
+                gridRows.forEach((tr, i) => {
+                    if (i > lastDataIdx && i > 0) {
+                        tr.setAttribute('data-cap-empty', '1');
+                        marked.push(tr);
+                    }
+                });
+
+                let width = Math.max(root.scrollWidth, body.scrollWidth, root.clientWidth);
+                body.querySelectorAll('[data-cap-expand-x]').forEach(el => {
+                    width = Math.max(width, Math.ceil(el.getBoundingClientRect().left + el.scrollWidth));
+                });
+                const estHeight = Math.max(root.scrollHeight, body.scrollHeight) + extra + 80;
+
+                let scale = Math.min(2, window.devicePixelRatio > 1 ? 2 : 1.5);
+                scale = Math.min(scale, 16000 / estHeight, 16000 / width, Math.sqrt(16000000 / (width * estHeight)));
+
+                const bg = getComputedStyle(body).backgroundColor;
+                let cropBottom = estHeight;
+                const canvas = await html2canvas(root, {
+                    backgroundColor: (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : '#f1f5f9',
+                    scale: scale,
+                    x: 0,
+                    y: 0,
+                    width: width,
+                    height: estHeight,
+                    windowWidth: width,
+                    windowHeight: estHeight,
+                    scrollX: 0,
+                    scrollY: 0,
+                    useCORS: true,
+                    logging: false,
+                    onclone: (doc) => {
+                        const win = doc.defaultView;
+                        doc.body.style.minHeight = '0';
+                        doc.body.style.height = 'auto';
+
+                        doc.querySelectorAll('[data-cap-empty]').forEach(tr => tr.remove());
+
+                        // Mở rộng các vùng cuộn để hiện đủ mọi dòng
+                        doc.querySelectorAll('[data-cap-expand]').forEach(el => {
+                            el.style.maxHeight = 'none';
+                            el.style.height = 'auto';
+                            el.style.overflowY = 'visible';
+                        });
+                        doc.querySelectorAll('[data-cap-expand], [data-cap-expand-x]').forEach(el => {
+                            el.style.overflow = 'visible';
+                        });
+
+                        // Bỏ sticky/blur để ảnh liền mạch
+                        doc.querySelectorAll('header, thead, thead th, thead tr').forEach(el => {
+                            el.style.position = 'static';
+                            el.style.backdropFilter = 'none';
+                            el.style.webkitBackdropFilter = 'none';
+                        });
+
+                        // Ẩn lớp phủ cố định (thông báo, huy hiệu lưu, hộp thoại)
+                        doc.querySelectorAll('#toastContainer, #dbStatusBadge, .no-capture').forEach(el => { el.style.display = 'none'; });
+                        doc.querySelectorAll('*').forEach(el => {
+                            if (el.id === 'dbStatusBadge') return;
+                            if (win.getComputedStyle(el).position === 'fixed') el.style.display = 'none';
+                        });
+
+                        // html2canvas cắt chữ trong <input>/<select>: thay bằng thẻ văn bản cùng kiểu dáng
+                        doc.querySelectorAll('input, select, textarea').forEach(el => {
+                            if (el.type === 'checkbox' || el.type === 'radio' || el.type === 'hidden' || el.type === 'file' || el.type === 'button') return;
+                            const cs = win.getComputedStyle(el);
+                            if (cs.display === 'none') return;
+                            let text = el.value;
+                            if (el.tagName === 'SELECT') {
+                                text = el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent : '';
+                            }
+                            if (!text) text = '';
+                            const span = doc.createElement('div');
+                            span.textContent = text;
+                            const align = cs.textAlign;
+                            span.style.cssText =
+                                'box-sizing:border-box;display:flex;align-items:center;overflow:visible;white-space:pre;' +
+                                'width:' + (el.offsetWidth ? el.offsetWidth + 'px' : '100%') + ';' +
+                                'min-height:' + (el.offsetHeight || 0) + 'px;' +
+                                'justify-content:' + (align === 'right' || align === 'end' ? 'flex-end' : (align === 'center' ? 'center' : 'flex-start')) + ';' +
+                                'padding:' + cs.padding + ';' +
+                                'font-family:' + cs.fontFamily + ';font-size:' + cs.fontSize + ';font-weight:' + cs.fontWeight + ';' +
+                                'letter-spacing:' + cs.letterSpacing + ';line-height:normal;' +
+                                'color:' + cs.color + ';background:' + cs.backgroundColor + ';' +
+                                'border:' + cs.border + ';border-radius:' + cs.borderRadius + ';margin:' + cs.margin + ';';
+                            el.parentNode.replaceChild(span, el);
+                        });
+
+                        // Đo đáy thật của nội dung trong bản sao để cắt bỏ phần trống thừa
+                        let bottom = 0;
+                        doc.querySelectorAll('main > *, body > header, body > footer').forEach(el => {
+                            const r = el.getBoundingClientRect();
+                            if (r.height > 0) bottom = Math.max(bottom, r.bottom);
+                        });
+                        if (bottom > 0) cropBottom = Math.ceil(bottom + 32);
+                    }
+                });
+
+                // Cắt phần trống phía dưới
+                let out = canvas;
+                const cropPx = Math.min(canvas.height, Math.round(cropBottom * scale));
+                if (cropPx > 0 && cropPx < canvas.height) {
+                    out = document.createElement('canvas');
+                    out.width = canvas.width;
+                    out.height = cropPx;
+                    out.getContext('2d').drawImage(canvas, 0, 0);
+                }
+
+                const blob = await new Promise(resolve => out.toBlob(resolve, 'image/png'));
+                if (!blob) throw new Error('Không tạo được ảnh');
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const stamp = (typeof currentDate === 'string' && currentDate) ? currentDate : new Date().toISOString().slice(0, 10);
+                a.href = url;
+                a.download = 'bao-cao-thu-chi-' + stamp + '.png';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 5000);
+                showToast('Đã chụp toàn bộ báo cáo và tải ảnh về máy.', 'success');
+            } catch (err) {
+                console.error(err);
+                showToast('Chụp báo cáo thất bại: ' + (err && err.message ? err.message : err), 'warning');
+            } finally {
+                marked.forEach(el => { el.removeAttribute('data-cap-expand'); el.removeAttribute('data-cap-expand-x'); el.removeAttribute('data-cap-empty'); });
+                btn.disabled = false;
+                icon.className = oldIconClass;
+                window.scrollTo(prevScrollX, prevScrollY);
+            }
         }
 
         function downloadStandaloneHtml() {
